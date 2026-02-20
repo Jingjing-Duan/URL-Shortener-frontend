@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>URL Shortener</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; max-width: 820px; margin: 40px auto; padding: 0 16px; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; margin: 16px 0; }
+    label { display: block; margin: 10px 0 6px; font-weight: 600; }
+    input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
+    button { padding: 10px 14px; border: 1px solid #333; border-radius: 8px; background: #111; color: #fff; cursor: pointer; }
+    button[disabled] { opacity: 0.6; cursor: not-allowed; }
+    .row { display: flex; gap: 12px; align-items: center; }
+    .row > * { flex: 1; }
+    .msg { margin-top: 10px; }
+    .error { color: #b00020; }
+    .ok { color: #0a7a2f; }
+    .history-item { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px dashed #ddd; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .small { font-size: 0.92rem; color: #444; }
+    a { color: #0b57d0; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>URL Shortener</h1>
+  <p class="small">Enter a long URL, optionally set a custom alias, then generate a short link.</p>
+
+  <div class="card">
+    <label for="url">Long URL</label>
+    <input id="url" type="url" placeholder="https://example.com/some/very/long/link" autocomplete="off" />
+
+    <label for="custom_code">Custom alias (optional)</label>
+    <input id="custom_code" type="text" placeholder="my-alias (A-Z a-z 0-9 _ -)" autocomplete="off" />
+
+    <div class="row" style="margin-top: 12px;">
+      <button id="btn">Shorten</button>
+      <button id="btnClear" type="button" style="background:#fff;color:#111;">Clear</button>
+    </div>
+
+    <div id="msg" class="msg"></div>
+
+    <div id="result" style="display:none; margin-top: 14px;">
+      <div><strong>Short link:</strong></div>
+      <div class="row" style="margin-top: 8px;">
+        <input id="shortUrl" class="mono" readonly />
+        <button id="btnCopy" type="button">Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Session history</h2>
+    <p class="small">Shows links created in this session. Refreshing the page clears this list.</p>
+    <div id="history"></div>
+  </div>
+
+  <script>
+    const USE_MOCK = true; // 后端好了就改成 false
+    // Backend base URL provided by Flask template
+    const BACKEND_BASE_URL = "{{ backend_base_url|e }}".replace(/\/+$/, "");
+    // const apiShortenUrl = (BACKEND_BASE_URL ? `${BACKEND_BASE_URL}/api/shorten` : "/api/shorten");
+
+    const elUrl = document.getElementById("url");
+    const elCustom = document.getElementById("custom_code");
+    const elBtn = document.getElementById("btn");
+    const elClear = document.getElementById("btnClear");
+    const elMsg = document.getElementById("msg");
+    const elResult = document.getElementById("result");
+    const elShortUrl = document.getElementById("shortUrl");
+    const elCopy = document.getElementById("btnCopy");
+    const elHistory = document.getElementById("history");
+
+    // Session history in memory (refresh clears it)
+    const history = [];
+
+    function setMsg(text, kind) {
+      elMsg.textContent = text;
+      elMsg.className = "msg " + (kind || "");
+    }
+
+    function isValidHttpUrl(value) {
+      try {
+        const u = new URL(value);
+        return u.protocol === "http:" || u.protocol === "https:";
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function isValidAlias(value) {
+      if (!value) return true;
+      return /^[A-Za-z0-9_-]{3,32}$/.test(value);
+    }
+
+    function renderHistory() {
+      if (history.length === 0) {
+        elHistory.innerHTML = `<div class="small">No links yet.</div>`;
+        return;
+      }
+
+      elHistory.innerHTML = history.map((item, idx) => {
+        const safeUrl = item.short_url; // already from backend
+        const long = item.url;
+        return `
+          <div class="history-item">
+            <div style="min-width:0; flex: 1;">
+              <div class="mono" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                <a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>
+              </div>
+              <div class="small" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                → ${escapeHtml(long)}
+              </div>
+            </div>
+            <button type="button" data-idx="${idx}" class="btnCopyMini">Copy</button>
+          </div>
+        `;
+      }).join("");
+
+      // wire copy buttons
+      document.querySelectorAll(".btnCopyMini").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          const idx = Number(e.currentTarget.getAttribute("data-idx"));
+          const val = history[idx]?.short_url;
+          if (!val) return;
+          await copyText(val);
+          setMsg("Copied from history.", "ok");
+        });
+      });
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    async function copyText(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        // fallback
+        const tmp = document.createElement("input");
+        tmp.value = text;
+        document.body.appendChild(tmp);
+        tmp.select();
+        document.execCommand("copy");
+        document.body.removeChild(tmp);
+      }
+    }
+
+    function setLoading(isLoading) {
+      elBtn.disabled = isLoading;
+      elBtn.textContent = isLoading ? "Creating..." : "Shorten";
+    }
+
+    elClear.addEventListener("click", () => {
+      elUrl.value = "";
+      elCustom.value = "";
+      elResult.style.display = "none";
+      setMsg("", "");
+      elUrl.focus();
+    });
+
+    elCopy.addEventListener("click", async () => {
+      const v = elShortUrl.value;
+      if (!v) return;
+      await copyText(v);
+      setMsg("Copied.", "ok");
+    });
+
+    elBtn.addEventListener("click", async () => {
+    const url = (elUrl.value || "").trim();
+    const custom_code = (elCustom.value || "").trim();
+
+    if (!url) return setMsg("Please enter a URL.", "error");
+    if (!isValidHttpUrl(url)) return setMsg("URL must start with http:// or https://", "error");
+    if (!isValidAlias(custom_code)) return setMsg("Alias format: 3-32 chars, A-Z a-z 0-9 _ -", "error");
+
+    // only require BACKEND_BASE_URL when NOT using mock
+    if (!USE_MOCK && !BACKEND_BASE_URL) {
+        return setMsg("Missing BACKEND_BASE_URL on frontend service.", "error");
+    }
+
+    setLoading(true);
+    setMsg("", "");
+    elResult.style.display = "none";
+
+    try {
+        let data = null;
+        let status = 201;
+
+        if (USE_MOCK) {
+        await new Promise(r => setTimeout(r, 400));
+
+        if (custom_code.toLowerCase() === "taken") {
+            // mock alias conflict
+              throw new Error("custom_code taken (mock).");
+        }
+
+        const base = BACKEND_BASE_URL || "http://localhost:8001";
+        data = {
+        code: custom_code || "Demo123",
+        short_url: `${base}/r/${custom_code || "Demo123"}`
+        };
+        status = 201;
+        } else {
+        const apiShortenUrl = `${BACKEND_BASE_URL.replace(/\/+$/, "")}/api/shorten`;
+
+        const resp = await fetch(apiShortenUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url, custom_code })
+        });
+
+        status = resp.status;
+        data = await resp.json().catch(() => ({}));
+
+        if (!resp.ok) {
+            const msg = data.error || `Request failed (${resp.status})`;
+            setMsg(msg, "error");
+            return;
+        }
+        }
+
+        // success UI (shared)
+        elShortUrl.value = data.short_url || "";
+        elResult.style.display = "block";
+        setMsg(status === 201 ? "Created." : "Already exists.", "ok");
+
+        history.unshift({ short_url: data.short_url, code: data.code, url });
+        if (history.length > 10) history.pop();
+        renderHistory();
+
+    } catch (e) {
+        setMsg("Network error calling backend API.", "error");
+    } finally {
+        setLoading(false);
+    }
+    });
+
+    // initial render
+    renderHistory();
+  </script>
+</body>
+</html>
