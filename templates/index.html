@@ -101,7 +101,9 @@
       }
 
       elHistory.innerHTML = history.map((item, idx) => {
-        const safeUrl = item.short_url; // already from backend
+        const safeUrl = item.short_url?.startsWith("http")
+            ? item.short_url
+            : `https://${item.short_url}`;
         const long = item.url;
         return `
           <div class="history-item">
@@ -228,7 +230,9 @@
         }
 
         // success UI (shared)
-        elShortUrl.value = data.short_url || "";
+        //elShortUrl.value = data.short_url || "";
+        const out = data.short_url || "";
+        elShortUrl.value = out.startsWith("http") ? out : `https://${out}`;
         elResult.style.display = "block";
         setMsg(status === 201 ? "Created." : "Already exists.", "ok");
 
